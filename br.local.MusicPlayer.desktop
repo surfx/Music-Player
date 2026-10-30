@@ -2,8 +2,9 @@
 Type=Application
 Name=Music Player
 Comment=Player de música GTK4
-Exec="/home/emerson/Área de trabalho/pp/projeto/iniciar.sh"
-Icon=multimedia-audio-player
+Exec=/mnt/disco_d/projetos/python/player_musica/iniciar.sh
+Icon=org.kde.elisa
 Terminal=false
 Categories=AudioVideo;Audio;Player;
 StartupNotify=true
+StartupWMClass=br.local.MusicPlayer

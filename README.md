@@ -35,7 +35,7 @@ sudo pacman -S python-gobject gtk4 libadwaita gst-plugins-base gst-plugins-good 
 O script encerra outras instâncias abertas antes de iniciar. Para ter um atalho no menu de aplicativos:
 
 ```sh
-cp musicplayer.desktop ~/.local/share/applications/
+cp br.local.MusicPlayer.desktop ~/.local/share/applications/
 ```
 
 Pasta padrão das músicas: `/mnt/disco_d/meus_documentos/Musicas/` (altere em `DEFAULT_FOLDER` ou pelo botão da interface).

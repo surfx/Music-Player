@@ -1065,6 +1065,10 @@ class App(Adw.Application):
         self.quit()
         return GLib.SOURCE_REMOVE
 
+    def do_startup(self):
+        Adw.Application.do_startup(self)
+        Gtk.Window.set_default_icon_name("org.kde.elisa")
+
     def do_activate(self):
         win = self.props.active_window or PlayerWindow(self)
         win.present()
