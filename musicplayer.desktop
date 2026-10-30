@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Music Player
+Comment=Player de música GTK4
+Exec="/home/emerson/Área de trabalho/pp/projeto/iniciar.sh"
+Icon=multimedia-audio-player
+Terminal=false
+Categories=AudioVideo;Audio;Player;
+StartupNotify=true
