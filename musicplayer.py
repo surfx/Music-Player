@@ -11,7 +11,10 @@ import random
 import signal
 import sys
 import threading
+import time
 import unicodedata
+import urllib.parse
+import urllib.request
 
 import gi
 
@@ -27,6 +30,9 @@ EXTENSIONS = {".mp3", ".flac", ".ogg", ".opus", ".m4a", ".wav", ".wma", ".aac", 
 DATA_DIR = os.path.join(GLib.get_user_data_dir(), "musicplayer")
 STATE_FILE = os.path.join(DATA_DIR, "state.json")
 FREQ_FILE = os.path.join(DATA_DIR, "frequency.json")
+COVER_FAIL_FILE = os.path.join(DATA_DIR, "cover_failures.json")
+COVER_RETRY_SECONDS = 7 * 86400
+USER_AGENT = "MusicPlayer/1.0 (local desktop player)"
 REPEAT_MODES = ["off", "all", "one"]
 
 Gst.init(None)
@@ -67,6 +73,42 @@ def fisher_yates(items):
 def fmt_time(sec):
     sec = max(0, int(sec))
     return f"{sec // 60}:{sec % 60:02d}"
+
+
+def http_get(url, timeout=15):
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read()
+
+
+def is_image(data):
+    return data[:3] == b"\xff\xd8\xff" or data[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def download_cover(artist):
+    """Busca a capa no iTunes e, se falhar, no MusicBrainz/Cover Art Archive
+    (mesmas fontes do kew). Retorna os bytes da imagem ou None."""
+    try:
+        q = urllib.parse.urlencode({"term": artist, "entity": "album", "limit": 1})
+        res = json.loads(http_get(f"https://itunes.apple.com/search?{q}"))["results"]
+        if res:
+            url = res[0]["artworkUrl100"].replace("100x100bb", "600x600bb")
+            data = http_get(url)
+            if is_image(data):
+                return data
+    except (OSError, ValueError, KeyError):
+        pass
+    try:
+        q = urllib.parse.urlencode({"query": f'artist:"{artist}"', "fmt": "json", "limit": 1})
+        mbid = json.loads(http_get(f"https://musicbrainz.org/ws/2/artist/?{q}"))["artists"][0]["id"]
+        q = urllib.parse.urlencode({"artist": mbid, "limit": 1, "fmt": "json"})
+        rel = json.loads(http_get(f"https://musicbrainz.org/ws/2/release?{q}"))["releases"][0]["id"]
+        data = http_get(f"https://coverartarchive.org/release/{rel}/front")
+        if is_image(data):
+            return data
+    except (OSError, ValueError, KeyError, IndexError):
+        pass
+    return None
 
 
 class Track:
@@ -407,6 +449,9 @@ class PlayerWindow(Adw.ApplicationWindow):
         self.errors = 0
         self.tick_n = 0
         self.set_default_size(*state.get("size", [960, 720]))
+        self.cover_failures = read_json(COVER_FAIL_FILE, {})
+        self.cover_downloading = set()
+        self.cover_shown = False
 
         self.pb = Gst.ElementFactory.make("playbin", "player")
         self.pb.set_property("video-sink", Gst.ElementFactory.make("fakesink"))
@@ -968,6 +1013,7 @@ class PlayerWindow(Adw.ApplicationWindow):
     # ---- capas (mesmo esquema do kew: .covers/<Artista>.jpg)
     def _load_cover_file(self, t):
         self._show_cover(None)
+        self.cover_shown = False
         root = os.path.abspath(self.folder)
         d = os.path.dirname(t.path)
         dirs = []
@@ -989,8 +1035,54 @@ class PlayerWindow(Adw.ApplicationWindow):
                         return
                     except GLib.Error:
                         pass
+        if t.artist:
+            self._fetch_cover(t, root)
+
+    def _fetch_cover(self, t, root):
+        artist = t.artist
+        key = norm(artist)
+        if key in self.cover_downloading:
+            return
+        if time.time() - self.cover_failures.get(key, 0) < COVER_RETRY_SECONDS:
+            return
+        self.cover_downloading.add(key)
+        # ".covers" na raiz da biblioteca, como o kew; nome sem separadores de caminho
+        dest = os.path.join(root, ".covers", artist.replace("/", "_") + ".jpg")
+
+        def work():
+            data = download_cover(artist)
+            saved = False
+            if data:
+                try:
+                    os.makedirs(os.path.dirname(dest), exist_ok=True)
+                    with open(dest + ".part", "wb") as f:
+                        f.write(data)
+                    os.replace(dest + ".part", dest)
+                    saved = True
+                except OSError as e:
+                    print("erro salvando capa:", e, file=sys.stderr)
+            GLib.idle_add(self._cover_downloaded, t, key, dest, saved)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _cover_downloaded(self, t, key, dest, saved):
+        self.cover_downloading.discard(key)
+        if not saved:
+            self.cover_failures[key] = time.time()
+            try:
+                write_json(COVER_FAIL_FILE, self.cover_failures)
+            except OSError:
+                pass
+            return False
+        if self.current and norm(self.current.artist) == key and not self.cover_shown:
+            try:
+                self._show_cover(Gdk.Texture.new_from_filename(dest))
+            except GLib.Error:
+                pass
+        return False
 
     def _show_cover(self, tex):
+        self.cover_shown = tex is not None
         self.cover_pic.set_from_paintable(tex)
         self.cover_stack.set_visible_child_name("pic" if tex else "ph")
 
