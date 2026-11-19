@@ -504,6 +504,11 @@ class PlayerWindow(Adw.ApplicationWindow):
         top = Gtk.Box(spacing=16)
         self.cover_stack = Gtk.Stack()
         self.cover_pic = Gtk.Image(pixel_size=150)
+        # Double-click on cover to delete and re-fetch
+        cover_click = Gtk.GestureClick()
+        cover_click.set_button(0)  # Any button
+        cover_click.connect("pressed", self._on_cover_clicked)
+        self.cover_pic.add_controller(cover_click)
         placeholder = Gtk.Image(icon_name="audio-x-generic-symbolic", pixel_size=64)
         self.cover_stack.add_named(self.cover_pic, "pic")
         self.cover_stack.add_named(placeholder, "ph")
@@ -575,7 +580,11 @@ class PlayerWindow(Adw.ApplicationWindow):
         root.append(self.count_lbl)
 
         view.set_content(root)
-        self.set_content(view)
+
+        # ToastOverlay for notifications (e.g., after deleting cover)
+        self.toast_overlay = Adw.ToastOverlay()
+        self.toast_overlay.set_child(view)
+        self.set_content(self.toast_overlay)
 
     def _build_actions(self):
         app = self.get_application()
@@ -1085,6 +1094,78 @@ class PlayerWindow(Adw.ApplicationWindow):
         self.cover_shown = tex is not None
         self.cover_pic.set_from_paintable(tex)
         self.cover_stack.set_visible_child_name("pic" if tex else "ph")
+
+    def _on_cover_clicked(self, gesture, n_press, x, y):
+        """Handle double-click on cover art to delete and re-fetch it."""
+        if n_press != 2:
+            return
+        if not self.current or not self.current.artist:
+            return
+
+        dlg = Adw.AlertDialog(
+            heading="Deletar capa do álbum?",
+            body=f'Remover a capa de "{self.current.artist}" e baixar novamente?',
+        )
+        dlg.add_response("cancel", "Cancelar")
+        dlg.add_response("delete", "Deletar e baixar")
+        dlg.set_response_appearance("delete", Adw.ResponseAppearance.DESTRUCTIVE)
+        dlg.set_default_response("cancel")
+        dlg.set_close_response("cancel")
+        dlg.connect("response", lambda d, r: self._delete_and_refetch_cover() if r == "delete" else None)
+        dlg.present(self)
+
+    def _delete_and_refetch_cover(self):
+        """Delete the current artist's cover file and re-fetch it."""
+        if not self.current or not self.current.artist:
+            return
+
+        artist = self.current.artist
+        key = norm(artist)
+        root = os.path.abspath(self.folder)
+
+        # Find and delete all cover files for this artist
+        deleted_any = False
+        for d in [root] + [os.path.join(root, p) for p in os.listdir(root) if os.path.isdir(os.path.join(root, p))]:
+            for name in (f"{artist}.jpg", f"{artist}.png", f"{artist.replace('/', '_')}.jpg", f"{artist.replace('/', '_')}.png"):
+                path = os.path.join(d, ".covers", name)
+                if os.path.isfile(path):
+                    try:
+                        os.remove(path)
+                        deleted_any = True
+                        print(f"Capa deletada: {path}")
+                    except OSError as e:
+                        print(f"Erro deletando capa {path}: {e}", file=sys.stderr)
+
+        # Also check .covers directly in root
+        covers_dir = os.path.join(root, ".covers")
+        if os.path.isdir(covers_dir):
+            for name in os.listdir(covers_dir):
+                if name.startswith(artist.replace("/", "_")):
+                    path = os.path.join(covers_dir, name)
+                    try:
+                        os.remove(path)
+                        deleted_any = True
+                        print(f"Capa deletada: {path}")
+                    except OSError as e:
+                        print(f"Erro deletando capa {path}: {e}", file=sys.stderr)
+
+        # Clear failure cache for this artist so we retry immediately
+        self.cover_failures.pop(key, None)
+        try:
+            write_json(COVER_FAIL_FILE, self.cover_failures)
+        except OSError:
+            pass
+
+        # Remove current cover from UI
+        self._show_cover(None)
+
+        # Re-fetch the cover
+        self._fetch_cover(self.current, root)
+
+        if not deleted_any:
+            # Show a toast/info that no local file was found but we're fetching anyway
+            toast = Adw.Toast.new(f"Nenhuma capa local encontrada para \"{artist}\", baixando nova...")
+            self.toast_overlay.add_toast(toast)
 
     # ---- UI periódica
     def _mark_current(self):
